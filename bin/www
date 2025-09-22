@@ -12,22 +12,52 @@ var http = require('http');
  * Get port from environment and store in Express.
  */
 
-var port = normalizePort(process.env.PORT || '3000');
-// app.set('port', port);
+var desiredPort = normalizePort(process.env.PORT || '3000');
+var maxFallbacks = parseInt(process.env.PORT_FALLBACK_MAX || '50', 10);
 
-/**
- * Create HTTP server.
- */
+// track the currently active server instance
+var activeServer = null;
 
-var server = http.createServer(app.callback());
+// Helper: try to listen on a numeric port, falling back to next ports when in use.
+function tryListen(port, attemptsLeft) {
+  // If port is not a number (named pipe), just try to listen once and let errors surface
+  if (typeof port !== 'number') {
+    var server = http.createServer(app.callback());
+    server.listen(port);
+    server.on('error', onError);
+    server.on('listening', onListening);
+    return;
+  }
 
-/**
- * Listen on provided port, on all network interfaces.
- */
+  var server = http.createServer(app.callback());
 
-server.listen(port);
-server.on('error', onError);
-server.on('listening', onListening);
+  server.on('listening', function() {
+    // remember this server so listeners can inspect it
+    activeServer = server;
+    onListening();
+  });
+
+  server.on('error', function(error) {
+    if (error.syscall !== 'listen') {
+      throw error;
+    }
+
+    if (error.code === 'EADDRINUSE' && attemptsLeft > 0) {
+      console.error('Port ' + port + ' is already in use, trying port ' + (port + 1) + '...');
+      // try next port
+      tryListen(port + 1, attemptsLeft - 1);
+      return;
+    }
+
+    // No fallback or other error -> handle normally
+    onError(error, port);
+  });
+
+  server.listen(port);
+}
+
+// Start attempting to listen from desiredPort
+tryListen(desiredPort, maxFallbacks);
 
 /**
  * Normalize a port into a number, string, or false.
@@ -58,9 +88,15 @@ function onError(error) {
     throw error;
   }
 
-  var bind = typeof port === 'string'
-    ? 'Pipe ' + port
-    : 'Port ' + port;
+  var bind;
+  if (typeof activeServer === 'string' || typeof activeServer === 'number') {
+    bind = typeof activeServer === 'string' ? 'Pipe ' + activeServer : 'Port ' + activeServer;
+  } else if (activeServer && activeServer.address) {
+    var a = activeServer.address();
+    bind = typeof a === 'string' ? 'Pipe ' + a : 'Port ' + a.port;
+  } else {
+    bind = 'Port ' + (process.env.PORT || 'unknown');
+  }
 
   // handle specific listen errors with friendly messages
   switch (error.code) {
@@ -82,9 +118,10 @@ function onError(error) {
  */
 
 function onListening() {
-  var addr = server.address();
-  var bind = typeof addr === 'string'
-    ? 'pipe ' + addr
-    : 'port ' + addr.port;
+  var addr = activeServer && activeServer.address && activeServer.address();
+  var bind = addr
+    ? (typeof addr === 'string' ? 'pipe ' + addr : 'port ' + addr.port)
+    : ('port ' + (process.env.PORT || 'unknown'));
+  console.log('Listening on ' + bind);
   debug('Listening on ' + bind);
 }
